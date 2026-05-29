@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const rideSchema = new mongoose.Schema(
   {
-    captain: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
+    captain: { type: mongoose.Schema.Types.ObjectId, required: false, index: true },
     user: { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
     pickup: { type: String, required: true },
     destination: { type: String, required: true },

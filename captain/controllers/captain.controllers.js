@@ -2,7 +2,12 @@ const captainModel = require('../models/captain.models');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const TokenBlacklist = require('../models/tokenBlacklist.models');
+const { subscribeToQueue } = require('../service/rabbit'); 
+// pending long-poll responses from captains waiting for new ride assignments
+const pendingWaiters = [];
 
+// max wait time for long-poll (ms)
+const LONG_POLL_TIMEOUT = 30000;
 function extractToken(req) {
     const cookieToken = req.cookies && req.cookies.token;
     if (cookieToken) return cookieToken;
@@ -125,3 +130,42 @@ module.exports.toggleAvailability = async (req, res) => {
     }
 };
 
+// When a new ride event arrives, notify any pending long-poll waiters.
+subscribeToQueue('ride.created', data => {
+    console.log('Received ride.created in controller:', data);
+    try {
+        // respond to all pending waiters for now (could be filtered by location/availability)
+        while (pendingWaiters.length) {
+            const waiter = pendingWaiters.shift();
+            try { waiter.resolve(data); } catch (e) { console.error('Failed to resolve waiter', e && e.message ? e.message : e); }
+        }
+    } catch (err) {
+        console.error('Error handling ride.created', err && err.message ? err.message : err);
+    }
+});
+
+// Long-poll handler: waits until a new ride is available or timeout
+module.exports.waitForRide = async (req, res) => {
+    try {
+        if (!req.captain) return res.status(401).json({ message: 'Unauthorized' });
+
+        // set timeout to avoid hanging forever
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            // return no content when timeout
+            res.status(204).end();
+        }, LONG_POLL_TIMEOUT);
+
+        // push a waiter that will be resolved when a ride arrives
+        pendingWaiters.push({ captainId: req.captain._id.toString(), res, timer, resolve: (payload) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { res.status(200).json({ ride: payload }); } catch (e) { /* ignore */ }
+        }});
+    } catch (err) {
+        return res.status(500).json({ message: 'Server error' });
+    }
+};
